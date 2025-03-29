@@ -15,3 +15,8 @@ Thumbs.db
 
 # Ignore dependencies (we use requirements.txt instead)
 *.log
+
+# ignore the build files by pyinstaller
+dist/
+build/
+*.spec
