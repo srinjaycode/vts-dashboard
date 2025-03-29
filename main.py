@@ -156,7 +156,81 @@ class ThemeManager:
                 border-radius: 5px;
             }
         """)
+class TemperatureBar(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(30)
+        self.setMinimumWidth(300)
+        self.value = 0
+        self.maximum = 100
+        self.colors = [
+            (0, 30, QColor(0, 120, 255)),    # Blue
+            (30, 60, QColor(0, 200, 0)),     # Green
+            (60, 80, QColor(255, 255, 0)),   # Yellow
+            (80, 100, QColor(255, 0, 0))     # Red
+        ]
+        
+    def setValue(self, value):
+        self.value = min(max(0, value), self.maximum)
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        width = self.width()
+        height = self.height()
+        margin = 2
+        
+        # Draw background
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(60, 60, 60) if self.parent().dark_mode else QColor(220, 220, 220)))
+        painter.drawRoundedRect(0, 0, width, height, 3, 3)
+        
+        # Draw filled segments with different colors
+        filled_width = (self.value / self.maximum) * (width - 2 * margin)
+        x_pos = margin
+        
+        for min_val, max_val, color in self.colors:
+            if self.value > min_val:
+                segment_width = (min(max_val, self.value) - min_val) / self.maximum * width
+                painter.setBrush(QBrush(color))
+                painter.drawRoundedRect(x_pos, margin, segment_width, height - 2 * margin, 2, 2)
+                x_pos += segment_width
+        
+        # Draw border
+        painter.setPen(QPen(QColor(100, 100, 100) if self.parent().dark_mode else QColor(180, 180, 180), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(0, 0, width, height, 3, 3)
 
+
+class TemperatureDisplay(QFrame):
+    def __init__(self, title="Temperature", parent=None):
+        super().__init__(parent)
+        self.dark_mode = True
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(10, 10, 10, 10)
+        self.layout.setSpacing(5)
+        
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-weight: bold; font-size: 16px;")
+        
+        self.value_label = QLabel("0.0°C")
+        self.value_label.setStyleSheet("font-size: 18px;")
+        
+        self.bar = TemperatureBar()
+        
+        self.layout.addWidget(self.title_label)
+        self.layout.addWidget(self.value_label)
+        self.layout.addWidget(self.bar)
+        
+    def setValue(self, value):
+        self.value_label.setText(f"{value:.1f}°C")
+        self.bar.setValue(value)
+        
+    def setDarkMode(self, dark_mode):
+        self.dark_mode = dark_mode
+        self.bar.update()
 class SerialReader(QObject):
     data_received = pyqtSignal(str)
     
@@ -369,9 +443,14 @@ class TelemetryApp(QMainWindow):
         self.title_label = QLabel("⚡ VTS Dashboard")
         self.title_label.setStyleSheet("font-size: 28px; font-weight: bold;")
         
-        self.theme_button = QPushButton("🌙")
-        self.theme_button.setFixedSize(40, 40)
-        self.theme_button.setStyleSheet("border: none; background: transparent; font-size: 20px;")
+        self.theme_button = QPushButton("🌙")  # Default moon icon
+        self.theme_button.setFixedSize(60, 60)  # Increased from 40x40 to 60x60
+        self.theme_button.setStyleSheet("""
+            border: none; 
+            background: transparent; 
+            font-size: 30px;  /* Increased from 20px */
+            padding: 0px;
+        """)
         self.theme_button.clicked.connect(self.toggle_theme)
         
         title_bar.addWidget(self.title_label)
@@ -419,13 +498,16 @@ class TelemetryApp(QMainWindow):
         temp_layout.setContentsMargins(0, 0, 0, 0)
         temp_layout.setSpacing(20)
         
-        self.motor_temp_label = QLabel("Motor: 25.0°C")
-        self.motor_temp_label.setStyleSheet("font-size: 18px; font-weight: bold;")
-        self.battery_temp_label = QLabel("Battery: 25.0°C")
-        self.battery_temp_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        self.motor_temp_display = TemperatureDisplay("Motor Temperature")
+        self.battery_temp_display = TemperatureDisplay("Battery Temperature")
         
-        temp_layout.addWidget(self.motor_temp_label)
-        temp_layout.addWidget(self.battery_temp_label)
+        # Set fixed width for both temperature displays
+        temp_width = 400
+        self.motor_temp_display.setFixedWidth(temp_width)
+        self.battery_temp_display.setFixedWidth(temp_width)
+        
+        temp_layout.addWidget(self.motor_temp_display)
+        temp_layout.addWidget(self.battery_temp_display)
         main_layout.addWidget(temp_frame)
 
         # Other telemetry data
@@ -546,11 +628,11 @@ class TelemetryApp(QMainWindow):
         try:
             if "MT:" in data:
                 self.motor_temp = float(data.split("MT:")[1].strip())
-                self.motor_temp_label.setText(f"Motor: {self.motor_temp:.1f}°C")
+                self.motor_temp_display.setValue(self.motor_temp)
             
             elif "BT:" in data:
                 self.battery_temp = float(data.split("BT:")[1].strip())
-                self.battery_temp_label.setText(f"Battery: {self.battery_temp:.1f}°C")
+                self.battery_temp_display.setValue(self.battery_temp)
                 
             elif "V:" in data:
                 self.vibration = float(data.split("V:")[1].strip())
