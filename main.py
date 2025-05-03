@@ -6,7 +6,7 @@ import time
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QGridLayout, QTableWidget, QTableWidgetItem, 
                              QHeaderView, QLineEdit, QDialog, QFrame, QComboBox, QSizePolicy, QStackedLayout)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPointF, QPoint, QRect
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QPointF, QPoint, QRect, QThread
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QLinearGradient, QDoubleValidator, QPalette, QPolygonF
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -195,7 +195,7 @@ class TemperatureBar(QFrame):
             if self.value > min_val:
                 segment_width = (min(max_val, self.value) - min_val) / self.maximum * width
                 painter.setBrush(QBrush(color))
-                painter.drawRoundedRect(x_pos, margin, segment_width, height - 2 * margin, 2, 2)
+                painter.drawRoundedRect(int(x_pos), int(margin), int(segment_width), int(height - 2 * margin), 2, 2)
                 x_pos += segment_width
         
         # Draw border
@@ -231,45 +231,67 @@ class TemperatureDisplay(QFrame):
     def setDarkMode(self, dark_mode):
         self.dark_mode = dark_mode
         self.bar.update()
+
 class SerialReader(QObject):
     data_received = pyqtSignal(str)
-    
+
     def __init__(self, port='COM1', baud_rate=9600):
         super().__init__()
         self.port = port
         self.baud_rate = baud_rate
-        self.is_running = False
         self.ser = None
-        
+        self.thread = QThread()
+        self.moveToThread(self.thread)
+        self.thread.started.connect(self._read_serial)
+        self._keep_reading = False
+
     def connect_serial(self, port, baud_rate):
         try:
             self.port = port
             self.baud_rate = baud_rate
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+
             self.ser = serial.Serial(self.port, self.baud_rate, timeout=1)
+            self.ser.reset_input_buffer()
+            print(f"[Serial] Connected to {self.port} at {self.baud_rate} baud.")
             return True
         except Exception as e:
-            print(f"Serial connection error: {e}")
+            print(f"[Serial Error] Connection failed: {e}")
             return False
-            
+
     def start_reading(self):
-        self.is_running = True
-        threading.Thread(target=self._read_serial, daemon=True).start()
-        
-    def stop_reading(self):
-        self.is_running = False
         if self.ser and self.ser.is_open:
-            self.ser.close()
-            
+            self._keep_reading = True
+            self.thread.start()
+        else:
+            print("[Serial Error] Cannot start reading — serial not connected.")
+
+    def stop_reading(self):
+        self._keep_reading = False
+        if self.thread.isRunning():
+            self.thread.quit()
+            self.thread.wait()
+        try:
+            if self.ser and self.ser.is_open:
+                self.ser.close()
+                print("[Serial] Port closed safely.")
+        except Exception as e:
+            print(f"[Serial Error] Closing port failed: {e}")
+
     def _read_serial(self):
-        while self.is_running:
+        print("[Serial] Reading thread started.")
+        while self._keep_reading:
             try:
-                if self.ser and self.ser.is_open and self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode('utf-8').strip()
+                if self.ser.in_waiting > 0:
+                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     if line:
                         self.data_received.emit(line)
             except Exception as e:
-                print(f"Error reading serial: {e}")
-                time.sleep(1)
+                print(f"[Serial Error] Reading failed: {e}")
+                time.sleep(0.5)
+        print("[Serial] Reading thread ending.")
+
 
 class GraphWindow(QDialog):
     def __init__(self, parent=None):
@@ -350,53 +372,6 @@ class GraphWindow(QDialog):
         self.figure.tight_layout()
         self.canvas.draw()
 
-class DecorativeTriangles(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.triangles = []
-        self.generate_triangles()
-        
-    def generate_triangles(self):
-        self.triangles = []
-        for _ in range(40):  # number of triangles
-            size = np.random.randint(35, 70)  # size range
-            x = np.random.randint(0, self.width())
-            y = np.random.randint(0, self.height())
-            angle = np.random.randint(0, 360)
-          
-            color_choice = np.random.choice(['red', 'blue', 'yellow'])
-            if color_choice == 'red':
-                color = QColor(255, 70, 70)  
-            elif color_choice == 'blue':
-                color = QColor(70, 170, 255)  
-            else:  # yellow
-                color = QColor(255, 230, 100)  
-            color.setAlpha(100)  # opacity
-            self.triangles.append((x, y, size, angle, color))
-    
-    def resizeEvent(self, event):
-        self.generate_triangles()
-        super().resizeEvent(event)
-    
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        for x, y, size, angle, color in self.triangles:
-            painter.save()
-            painter.translate(x, y)
-            painter.rotate(angle)
-            
-            triangle = QPolygonF()
-            triangle.append(QPointF(0, -size/2))
-            triangle.append(QPointF(size/3, size/2))
-            triangle.append(QPointF(-size/3, size/2))
-            
-            painter.setBrush(QBrush(color))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawPolygon(triangle)
-            painter.restore()
 
 class TelemetryApp(QMainWindow):
     def __init__(self):
@@ -584,33 +559,13 @@ class TelemetryApp(QMainWindow):
 
         central_widget.setLayout(main_layout)
         
-        self.triangle_overlay = DecorativeTriangles()
-        self.triangle_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        
         self.stacked_layout = QStackedLayout()
         self.stacked_layout.setStackingMode(QStackedLayout.StackingMode.StackAll)
         self.stacked_layout.addWidget(central_widget)
-        self.stacked_layout.addWidget(self.triangle_overlay)
         
         container = QWidget()
         container.setLayout(self.stacked_layout)
         self.setCentralWidget(container)
-        
-        # Timer to refresh triangles periodically
-        self.triangle_timer = QTimer(self)
-        self.triangle_timer.timeout.connect(self.refresh_triangles)
-        self.triangle_timer.start(2000)  # refresh every 2 seconds
-
-    def refresh_triangles(self):
-        if hasattr(self, 'triangle_overlay'):
-            self.triangle_overlay.generate_triangles()
-            self.triangle_overlay.update()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'triangle_overlay'):
-            self.triangle_overlay.setGeometry(self.rect())
-            self.refresh_triangles()
 
     def toggle_theme(self):
         self.dark_mode = not self.dark_mode
@@ -638,12 +593,16 @@ class TelemetryApp(QMainWindow):
                 self.vibration = float(data.split("V:")[1].strip())
                 self.vibration_label.setText(f"Vibration Level: {self.vibration:.1f}")
             
-            elif "W" in data:
+            elif data.startswith("W:0"):
+                self.warning_active = False
+                self.warning_timer.stop()
+                self.warning_box.setStyleSheet("")
+                
+            elif data.startswith("W:1"):
                 if not self.warning_active:
                     self.warning_active = True
                     self.warning_box.setStyleSheet("background-color: red; border: 3px solid red;")
-                    self.warning_timer.start(500)
-            
+                    self.warning_timer.start(500)       
         except Exception as e:
             print(f"Error processing serial data: {e}")
 
